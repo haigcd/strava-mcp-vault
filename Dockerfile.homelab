@@ -1,0 +1,8 @@
+# Homelab build: the upstream v0.4.1 image (pinned by digest) with this fork's
+# package copied over it. Python, the base image and every dependency stay
+# byte-identical to the image that was running; only our code changes, and
+# nothing is fetched from PyPI. To upgrade: rebase the fork onto the new
+# upstream tag and update the digest (docker buildx imagetools inspect).
+FROM ghcr.io/pete-builds/strava-mcp-vault:0.4.1@sha256:cf5d9b5f93fd2c793f7b315974c30423f3b7bc617cb282fa1853cc36c3d059b6
+
+COPY src/strava_mcp_vault /usr/local/lib/python3.13/site-packages/strava_mcp_vault
