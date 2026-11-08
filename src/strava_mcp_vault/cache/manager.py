@@ -18,6 +18,10 @@ METERS_PER_MILE = 1609.344
 
 logger = logging.getLogger(__name__)
 
+# Streams fetched when the caller doesn't name any: what a ride or run analysis
+# needs. Strava leaves out streams an activity doesn't have.
+DEFAULT_STREAM_TYPES = "time,watts,heartrate,cadence,altitude,distance"
+
 TTL = {
     "activities_list": 3600,  # 1 hour
     "activity_detail": 86400,  # 24 hours
@@ -276,7 +280,7 @@ class CacheManager:
     async def get_activity_streams(
         self,
         activity_id: int,
-        stream_types: str = "heartrate,distance,altitude",
+        stream_types: str = DEFAULT_STREAM_TYPES,
     ) -> dict:
         """Return activity streams, cached for 7 days."""
         types_list = [t.strip() for t in stream_types.split(",")]

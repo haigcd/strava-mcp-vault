@@ -44,7 +44,7 @@ For a simpler setup that just wraps the existing npm package in Docker, see [str
 |------|-------------|-----------|
 | `get_recent_activities` | List recent activities with distance, time, HR | 1 hour |
 | `get_activity` | Full activity detail (segments, splits, gear) | 24 hours |
-| `get_activity_streams` | Time-series data (heart rate, elevation, GPS) | 7 days |
+| `get_activity_streams` | Time-series data (power, heart rate, cadence, elevation): a summary plus a CSV of 30-second averages (`bucket_seconds`) | 7 days |
 | `get_athlete_profile` | Authenticated athlete info | 24 hours |
 | `get_athlete_stats` | YTD and all-time totals | 1 day |
 | `get_cache_stats` | Cache hit/miss rates and API rate limit status | none |
