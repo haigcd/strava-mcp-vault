@@ -612,11 +612,53 @@ def format_activity_detail(activity: dict) -> str:
     return "\n".join(lines)
 
 
-def format_activity_streams(streams: dict | list, activity_id: int) -> str:
-    """Format activity streams as a compact markdown summary.
+# Bucketed series: enough rows for drift, intervals and time-in-zone analysis,
+# few enough to stay a few thousand tokens. A 3-hour ride at 30 s is 360 rows.
+DEFAULT_BUCKET_SECONDS = 30
+MAX_BUCKET_ROWS = 600
+
+# Columns of the bucketed table, in order. Location and the moving flag are not
+# numeric series; time is the index itself.
+_SERIES_ORDER = (
+    "watts",
+    "heartrate",
+    "cadence",
+    "velocity_smooth",
+    "grade_smooth",
+    "altitude",
+    "distance",
+    "temp",
+)
+_SERIES_COLUMN = {
+    "watts": "watts_w",
+    "heartrate": "hr_bpm",
+    "cadence": "cadence_rpm",
+    "velocity_smooth": "speed_mps",
+    "grade_smooth": "grade_pct",
+    "altitude": "altitude_m",
+    "distance": "distance_m",
+    "temp": "temp_c",
+}
+# Distance is cumulative, so a bucket reports where it ended, not its mean.
+_SERIES_LAST_VALUE = frozenset({"distance"})
+_SERIES_DECIMALS = {"velocity_smooth": 2, "grade_smooth": 1, "altitude": 1}
+
+
+def format_activity_streams(
+    streams: dict | list,
+    activity_id: int,
+    bucket_seconds: int = DEFAULT_BUCKET_SECONDS,
+) -> str:
+    """Format activity streams as a summary plus a bucketed time series.
 
     Streams can be a dict of {type: {data: [...], ...}} or a list of
     stream objects with 'type' and 'data' keys.
+
+    The summary gives each stream's point count, min, max and average. Unless
+    ``bucket_seconds`` is 0, it is followed by a CSV of per-bucket averages
+    keyed by elapsed time, so callers can see how effort changed within the
+    activity (pacing, fade, heart-rate drift, intervals). Buckets widen
+    automatically to keep the table under MAX_BUCKET_ROWS rows.
     """
     lines = [f"## Activity Streams (ID: {activity_id})\n"]
 
@@ -630,11 +672,13 @@ def format_activity_streams(streams: dict | list, activity_id: int) -> str:
         return "\n".join(lines)
 
     for stream_type, data in streams.items():
+        if stream_type == "time":
+            continue
         if not isinstance(data, list) or not data:
             lines.append(f"**{stream_type}:** No data")
             continue
 
-        numeric_data = [x for x in data if isinstance(x, int | float)]
+        numeric_data = [x for x in data if _is_number(x)]
 
         if numeric_data:
             min_val = min(numeric_data)
@@ -653,7 +697,81 @@ def format_activity_streams(streams: dict | list, activity_id: int) -> str:
         else:
             lines.append(f"**{stream_type}:** {len(data)} data points\n")
 
+    if bucket_seconds and bucket_seconds > 0:
+        lines.extend(_format_bucketed_series(streams, bucket_seconds))
+
     return "\n".join(lines)
+
+
+def _is_number(x) -> bool:
+    return isinstance(x, int | float) and not isinstance(x, bool)
+
+
+def _format_bucketed_series(streams: dict[str, list], bucket_seconds: int) -> list[str]:
+    """Render per-bucket averages of the numeric streams as a CSV block."""
+    series = [
+        name
+        for name in _SERIES_ORDER
+        if isinstance(streams.get(name), list) and any(_is_number(v) for v in streams[name])
+    ]
+    if not series:
+        return []
+
+    n = max(len(streams[name]) for name in series)
+    time_data = streams.get("time")
+    if (
+        isinstance(time_data, list)
+        and len(time_data) >= n
+        and all(_is_number(t) for t in time_data[:n])
+    ):
+        times = time_data[:n]
+        time_note = "elapsed seconds from the start"
+    else:
+        times = list(range(n))
+        time_note = "sample index (no time stream; assumes one sample per second)"
+
+    span = times[-1] - times[0] if n else 0
+    width = max(1, int(bucket_seconds))
+    if span / width > MAX_BUCKET_ROWS:
+        width = int(-(-span // MAX_BUCKET_ROWS))  # ceiling division
+    widened = width != bucket_seconds
+
+    buckets: dict[int, dict[str, list]] = {}
+    for i, t in enumerate(times):
+        row = buckets.setdefault(int((t - times[0]) // width), {})
+        for name in series:
+            data = streams[name]
+            if i < len(data) and _is_number(data[i]):
+                row.setdefault(name, []).append(data[i])
+
+    header = ["t_s", *(_SERIES_COLUMN[name] for name in series)]
+    rows = [",".join(header)]
+    for index in sorted(buckets):
+        cells = [str(index * width)]
+        for name in series:
+            values = buckets[index].get(name)
+            if not values:
+                cells.append("")
+                continue
+            value = values[-1] if name in _SERIES_LAST_VALUE else sum(values) / len(values)
+            decimals = _SERIES_DECIMALS.get(name, 0)
+            cells.append(f"{value:.{decimals}f}" if decimals else str(round(value)))
+        rows.append(",".join(cells))
+
+    note = f"{width}-second buckets"
+    if widened:
+        note += f" (widened from {bucket_seconds} s to stay under {MAX_BUCKET_ROWS} rows)"
+    return [
+        "### Time series",
+        f"{note}. t_s is the bucket start in {time_note}. Values are bucket averages "
+        "(watts include zeros while coasting); distance is the cumulative value at the "
+        "bucket's end. Units: W, bpm, rpm, m/s, %, m, °C. Paused time has no rows.",
+        "",
+        "```csv",
+        *rows,
+        "```",
+        "",
+    ]
 
 
 def _stream_unit(stream_type: str) -> str:

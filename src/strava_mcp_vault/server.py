@@ -9,10 +9,11 @@ from mcp.server import MCPServer
 
 from strava_mcp_vault.cache.db import CacheDB
 from strava_mcp_vault.cache.geocode import forward_geocode, reverse_geocode_many
-from strava_mcp_vault.cache.manager import CacheManager
+from strava_mcp_vault.cache.manager import DEFAULT_STREAM_TYPES, CacheManager
 from strava_mcp_vault.clients.strava import StravaClient
 from strava_mcp_vault.exceptions import VaultError
 from strava_mcp_vault.formatters import (
+    DEFAULT_BUCKET_SECONDS,
     format_activities_near,
     format_activity_detail,
     format_activity_streams,
@@ -250,17 +251,31 @@ async def get_activity(activity_id: int) -> str:
 
 @mcp.tool(annotations=READ_REMOTE)
 async def get_activity_streams(
-    activity_id: int, stream_types: str = "heartrate,distance,altitude"
+    activity_id: int,
+    stream_types: str = DEFAULT_STREAM_TYPES,
+    bucket_seconds: int = DEFAULT_BUCKET_SECONDS,
 ) -> str:
-    """Get time-series data for an activity (heart rate, elevation, etc).
+    """Get time-series data for an activity (power, heart rate, cadence, etc).
+
+    Returns a min/max/average summary of each stream, then a CSV of averages
+    per time bucket (default 30 s), so you can see how effort changed within
+    the activity: pacing, fade, heart-rate drift against power, intervals,
+    time in zones. Long activities get wider buckets (at most 600 rows).
+    Streams the activity doesn't have (e.g. watts without a power meter) are
+    left out. Each new activity costs one Strava API call; results are cached.
 
     Args:
         activity_id: The Strava activity ID.
-        stream_types: Comma-separated stream types (e.g. heartrate,distance,altitude).
+        stream_types: Comma-separated stream types. Available: time, watts,
+            heartrate, cadence, velocity_smooth, grade_smooth, altitude,
+            distance, temp, latlng, moving. Keep time in the list.
+        bucket_seconds: Bucket width for the time series. Use 0 for the
+            summary only, or a smaller value (e.g. 5 or 10) to look closely at
+            short intervals.
     """
     try:
         result = await manager.get_activity_streams(activity_id, stream_types)
-        return format_activity_streams(result, activity_id)
+        return format_activity_streams(result, activity_id, bucket_seconds)
     except VaultError as e:
         return f"Error: {e}"
     except Exception as e:

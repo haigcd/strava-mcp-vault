@@ -478,3 +478,81 @@ def test_format_delete_activities_success():
 def test_format_delete_activities_partial():
     result = format_delete_activities(1, [1, 2, 3])
     assert "Not found" in result
+
+
+# ── format_activity_streams: bucketed time series ──────────────────────
+
+
+def _csv_rows(result: str) -> list[list[str]]:
+    block = result.split("```csv\n", 1)[1].split("\n```", 1)[0]
+    return [line.split(",") for line in block.splitlines()]
+
+
+def test_streams_bucketed_averages_by_time():
+    streams = {
+        "time": {"data": [0, 10, 20, 30, 40, 50]},
+        "watts": {"data": [100, 200, 300, 0, 0, 0]},
+        "heartrate": {"data": [120, 130, 140, 150, 150, 150]},
+    }
+    rows = _csv_rows(format_activity_streams(streams, 1, bucket_seconds=30))
+    assert rows[0] == ["t_s", "watts_w", "hr_bpm"]
+    assert rows[1] == ["0", "200", "130"]
+    # Coasting zeros count toward average power.
+    assert rows[2] == ["30", "0", "150"]
+
+
+def test_streams_distance_uses_bucket_end_value():
+    streams = {
+        "time": {"data": [0, 10, 20, 30]},
+        "distance": {"data": [0.0, 50.0, 120.0, 200.0]},
+    }
+    rows = _csv_rows(format_activity_streams(streams, 1, bucket_seconds=20))
+    assert rows[1] == ["0", "50"]
+    assert rows[2] == ["20", "200"]
+
+
+def test_streams_bucket_widens_for_long_activities():
+    n = 4 * 3600  # four hours at 1 Hz
+    streams = {"time": list(range(n)), "heartrate": [140] * n}
+    result = format_activity_streams(streams, 1, bucket_seconds=10)
+    rows = _csv_rows(result)
+    assert len(rows) - 1 <= 600
+    assert "widened from 10 s" in result
+
+
+def test_streams_pause_leaves_no_rows():
+    streams = {"time": [0, 1, 2, 600, 601], "heartrate": [100, 100, 100, 140, 140]}
+    rows = _csv_rows(format_activity_streams(streams, 1, bucket_seconds=60))
+    assert [r[0] for r in rows[1:]] == ["0", "600"]
+
+
+def test_streams_without_time_use_sample_index():
+    result = format_activity_streams({"heartrate": [120, 130, 140, 150]}, 1, bucket_seconds=2)
+    assert "sample index" in result
+    assert _csv_rows(result)[1:] == [["0", "125"], ["2", "145"]]
+
+
+def test_streams_bucket_zero_is_summary_only():
+    streams = {"time": [0, 1, 2], "heartrate": [120, 130, 140]}
+    result = format_activity_streams(streams, 1, bucket_seconds=0)
+    assert "Heartrate" in result
+    assert "```csv" not in result
+
+
+def test_streams_list_shape_bucketed():
+    # The shape the live API returns with key_type=time.
+    streams = [
+        {"type": "time", "data": [0, 1, 2, 3]},
+        {"type": "watts", "data": [200, 220, 240, 260]},
+        {"type": "latlng", "data": [[40.0, -75.0]] * 4},
+    ]
+    result = format_activity_streams(streams, 1, bucket_seconds=2)
+    assert _csv_rows(result) == [["t_s", "watts_w"], ["0", "210"], ["2", "250"]]
+    # The time stream is the index, not a summarised series.
+    assert "### Time\n" not in result
+
+
+def test_streams_ignore_booleans_in_numeric_series():
+    streams = {"time": [0, 1], "moving": [True, False], "heartrate": [120, 140]}
+    rows = _csv_rows(format_activity_streams(streams, 1, bucket_seconds=10))
+    assert rows == [["t_s", "hr_bpm"], ["0", "130"]]
